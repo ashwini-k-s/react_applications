@@ -1,10 +1,12 @@
-import { useCallback, useState, useEffect } from "react";
 
-import DiagramNode from "./DiagramNode";
+import {
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 
 import {
   ReactFlow,
-  Background,
   Controls,
   MiniMap,
   useReactFlow,
@@ -16,11 +18,89 @@ import {
 import "@xyflow/react/dist/style.css";
 import "./App.css";
 
-function App() {
-  // ==========================================
-  // ARCHITECTURES
-  // ==========================================
+import DiagramNode from "./DiagramNode";
+import StudentArchitectureViewer from "./pages/StudentArchitectureViewer";
+import StudentArchitectures from "./pages/StudentArchitectures";
+import { createArchitecture } from "./api";
 
+function App() {
+  // Student and shared architecture views
+  const [studentView, setStudentView] = useState(false);
+  const [sharedArchitectureId, setSharedArchitectureId] =
+    useState(null);
+  
+const handleEditArchitecture = async (architectureId) => {
+  try {
+    console.log("Opening architecture for editing:", architectureId);
+
+    const response = await fetch(
+      `http://127.0.0.1:8000/api/architectures/${architectureId}`
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.detail || "Failed to load architecture for editing"
+      );
+    }
+
+    const data = await response.json();
+
+    const content =
+      typeof data.content === "string"
+        ? JSON.parse(data.content)
+        : data.content;
+
+    if (
+      !content?.architectures ||
+      !content.architectures.root
+    ) {
+      throw new Error(
+        "Saved architecture content is missing or invalid."
+      );
+    }
+
+    setEditingArchitectureId(data.id);
+    setArchitectureName(data.name || "Main Architecture");
+    setArchitectures(content.architectures);
+    setLevelNames(
+      content.levelNames || {
+        root: data.name || "Main Architecture",
+      }
+    );
+
+    const savedLevel = content.currentLevel || "root";
+
+    setCurrentLevel(
+      content.architectures[savedLevel] ? savedLevel : "root"
+    );
+
+    setLevelHistory(content.levelHistory || []);
+    setSelectedNodeId(null);
+    setActiveTool("select");
+    setPublishStatus(data.status || "draft");
+
+    localStorage.setItem("architecture-id", String(data.id));
+    setStudentView(false);
+
+    console.log("Architecture loaded successfully:", data.id);
+  } catch (error) {
+    console.error("Load architecture for editing error:", error);
+    window.alert(`Unable to open architecture: ${error.message}`);
+  }
+};
+
+  useEffect(() => {
+    const match = window.location.pathname.match(
+      /^\/student\/architecture\/(\d+)$/
+    );
+
+    if (match) {
+      setSharedArchitectureId(Number(match[1]));
+    }
+  }, []);
+
+  // Architecture data
   const [architectures, setArchitectures] = useState({
     root: {
       name: "Main Architecture",
@@ -29,195 +109,109 @@ function App() {
     },
   });
 
-  // ==========================================
-  // CURRENT LEVEL
-  // ==========================================
-
   const [currentLevel, setCurrentLevel] = useState("root");
-
-  // ==========================================
-  // DRILL DOWN HISTORY
-  // ==========================================
-
   const [levelHistory, setLevelHistory] = useState([]);
 
-  // Store the actual names given to components
+  const [architectureName, setArchitectureName] =
+    useState("Main Architecture");
+
   const [levelNames, setLevelNames] = useState({
     root: "Main Architecture",
   });
 
-  // ==========================================
-  // ACTIVE TOOL
-  // ==========================================
-
   const [activeTool, setActiveTool] = useState("select");
-
-  // ==========================================
-  // SELECTED NODE
-  // ==========================================
-
-  const [selectedNodeId, setSelectedNodeId] =
-    useState(null);
-
-// ==========================================
-// PUBLISH STATUS
-// ==========================================
-
-  const [publishStatus, setPublishStatus] =
-    useState("draft");  
-
-  // ==========================================
-  // REACT FLOW
-  // ==========================================
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [publishStatus, setPublishStatus] = useState("draft");
+  const [editingArchitectureId, setEditingArchitectureId] =
+  useState(null);
 
   const { screenToFlowPosition } = useReactFlow();
 
-  // ==========================================
-  // CURRENT ARCHITECTURE
-  // ==========================================
+  const currentArchitecture = architectures[currentLevel];
+  const nodes = currentArchitecture?.nodes || [];
 
-  const currentArchitecture =
-    architectures[currentLevel];
-
-  const nodes =
-    currentArchitecture?.nodes || [];
-
-  const edges =
-    currentArchitecture?.edges || [];
-
-  // ==========================================
-  // NODE TYPES
-  // ==========================================
+  const edges = (currentArchitecture?.edges || []).map((edge) => ({
+    ...edge,
+    type: "smoothstep",
+    style: {
+      stroke: "#333333",
+      strokeWidth: 2,
+      ...edge.style,
+    },
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: "#333333",
+      width: 20,
+      height: 20,
+    },
+  }));
 
   const nodeTypes = {
     diagram: DiagramNode,
+    diagramNode: DiagramNode,
   };
 
-  // ==========================================
-  // SELECTED NODE
-  // ==========================================
-
   const selectedNode =
-    nodes.find(
-      (node) =>
-        node.id === selectedNodeId
-    ) || null;
+    nodes.find((node) => node.id === selectedNodeId) || null;
 
-  // ==========================================
-  // NODE CHANGES
-  // ==========================================
-
+  // Update node positions and selection
   const onNodesChange = useCallback(
     (changes) => {
-      setArchitectures(
-        (currentArchitectures) => {
-          const architecture =
-            currentArchitectures[
-              currentLevel
-            ];
+      setArchitectures((current) => {
+        const architecture = current[currentLevel];
+        if (!architecture) return current;
 
-          if (!architecture) {
-            return currentArchitectures;
-          }
-
-          const updatedNodes =
-            applyNodeChanges(
-              changes,
-              architecture.nodes
-            );
-
-          return {
-            ...currentArchitectures,
-
-            [currentLevel]: {
-              ...architecture,
-              nodes: updatedNodes,
-            },
-          };
-        }
-      );
+        return {
+          ...current,
+          [currentLevel]: {
+            ...architecture,
+            nodes: applyNodeChanges(changes, architecture.nodes),
+          },
+        };
+      });
     },
     [currentLevel]
   );
 
-  // ==========================================
-  // EDGE CHANGES
-  // ==========================================
-
+  // Update edges
   const onEdgesChange = useCallback(
     (changes) => {
-      setArchitectures(
-        (currentArchitectures) => {
-          const architecture =
-            currentArchitectures[
-              currentLevel
-            ];
+      setArchitectures((current) => {
+        const architecture = current[currentLevel];
+        if (!architecture) return current;
 
-          if (!architecture) {
-            return currentArchitectures;
-          }
-
-          const updatedEdges =
-            applyEdgeChanges(
-              changes,
-              architecture.edges
-            );
-
-          return {
-            ...currentArchitectures,
-
-            [currentLevel]: {
-              ...architecture,
-              edges: updatedEdges,
-            },
-          };
-        }
-      );
+        return {
+          ...current,
+          [currentLevel]: {
+            ...architecture,
+            edges: applyEdgeChanges(changes, architecture.edges),
+          },
+        };
+      });
     },
     [currentLevel]
   );
 
-  // ==========================================
-  // CREATE COMPONENT
-  // ==========================================
-
+  // Create shapes and text on the canvas
   const handlePaneClick = useCallback(
     (event) => {
-      // SELECT MODE
-      if (activeTool === "select") {
+      if (activeTool === "select" || activeTool === "arrow") {
         return;
       }
 
-      // ARROW MODE
-      if (activeTool === "arrow") {
-        return;
-      }
-
-      // Get canvas position
-      const position =
-        screenToFlowPosition({
-          x: event.clientX,
-          y: event.clientY,
-        });
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
 
       let newNode = null;
-
-      // ======================================
-      // RECTANGLE
-      // ======================================
 
       if (activeTool === "rectangle") {
         newNode = {
           id: `rectangle-${Date.now()}`,
           type: "diagram",
           position,
-
-          data: {
-            label: "",
-            description: "",
-            children: [],
-          },
-
+          data: { label: "", description: "", children: [] },
           style: {
             width: 180,
             height: 100,
@@ -228,22 +222,12 @@ function App() {
         };
       }
 
-      // ======================================
-      // CIRCLE
-      // ======================================
-
       if (activeTool === "circle") {
         newNode = {
           id: `circle-${Date.now()}`,
           type: "diagram",
           position,
-
-          data: {
-            label: "",
-            description: "",
-            children: [],
-          },
-
+          data: { label: "", description: "", children: [] },
           style: {
             width: 100,
             height: 100,
@@ -254,41 +238,24 @@ function App() {
         };
       }
 
-      // ======================================
-      // CONTAINER
-      // ======================================
-
       if (activeTool === "container") {
         newNode = {
           id: `container-${Date.now()}`,
           type: "diagram",
           position,
-
-          data: {
-            label: "",
-            description: "",
-            children: [],
-          },
-
+          data: { label: "", description: "", children: [] },
           style: {
             width: 350,
             height: 220,
             border: "2px solid #333",
             borderRadius: "10px",
-            background:
-              "rgba(255,255,255,0.5)",
+            background: "rgba(255,255,255,0.5)",
           },
         };
       }
 
-      // ======================================
-      // TEXT
-      // ======================================
-
       if (activeTool === "text") {
-        const text = window.prompt(
-          "Enter text"
-        );
+        const text = window.prompt("Enter text");
 
         if (!text) {
           setActiveTool("select");
@@ -299,13 +266,7 @@ function App() {
           id: `text-${Date.now()}`,
           type: "diagram",
           position,
-
-          data: {
-            label: text,
-            description: "",
-            children: [],
-          },
-
+          data: { label: text, description: "", children: [] },
           style: {
             background: "transparent",
             border: "none",
@@ -319,107 +280,64 @@ function App() {
         };
       }
 
-      // ======================================
-      // ADD NODE
-      // ======================================
-
       if (newNode) {
-        setArchitectures(
-          (currentArchitectures) => {
-            const architecture =
-              currentArchitectures[
-                currentLevel
-              ];
+        setArchitectures((current) => {
+          const architecture = current[currentLevel];
+          if (!architecture) return current;
 
-            if (!architecture) {
-              return currentArchitectures;
-            }
-
-            return {
-              ...currentArchitectures,
-
-              [currentLevel]: {
-                ...architecture,
-
-                nodes: [
-                  ...architecture.nodes,
-                  newNode,
-                ],
-              },
-            };
-          }
-        );
+          return {
+            ...current,
+            [currentLevel]: {
+              ...architecture,
+              nodes: [...architecture.nodes, newNode],
+            },
+          };
+        });
       }
 
-      // Return to Select mode
       setActiveTool("select");
     },
-    [
-      activeTool,
-      currentLevel,
-      screenToFlowPosition,
-    ]
+    [activeTool, currentLevel, screenToFlowPosition]
   );
 
-  // ==========================================
-  // CONNECT ARROW
-  // ==========================================
-
+  // Connect nodes with arrows
   const handleConnect = useCallback(
     (connection) => {
       const newEdge = {
         ...connection,
-
         id: `edge-${Date.now()}`,
-
         type: "smoothstep",
-
         markerEnd: {
           type: MarkerType.ArrowClosed,
+          color: "#333333",
         },
-
         style: {
+          stroke: "#333333",
           strokeWidth: 2,
         },
       };
 
-      setArchitectures(
-        (currentArchitectures) => {
-          const architecture =
-            currentArchitectures[
-              currentLevel
-            ];
+      setArchitectures((current) => {
+        const architecture = current[currentLevel];
+        if (!architecture) return current;
 
-          if (!architecture) {
-            return currentArchitectures;
-          }
-
-          return {
-            ...currentArchitectures,
-
-            [currentLevel]: {
-              ...architecture,
-
-              edges: [
-                ...architecture.edges,
-                newEdge,
-              ],
-            },
-          };
-        }
-      );
+        return {
+          ...current,
+          [currentLevel]: {
+            ...architecture,
+            edges: [...architecture.edges, newEdge],
+          },
+        };
+      });
 
       setActiveTool("select");
     },
     [currentLevel]
   );
 
-  // ==========================================
-  // NODE CLICK
-  // ==========================================
-
+  // Select a node
   const handleNodeClick = useCallback(
-    (event, node) => {
+    (_event, node) => {
       if (activeTool === "select") {
         setSelectedNodeId(node.id);
       }
@@ -427,793 +345,564 @@ function App() {
     [activeTool]
   );
 
-  // ==========================================
-  // SELECTION CHANGE
-  // ==========================================
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes }) => {
+    setSelectedNodeId(selectedNodes[0]?.id || null);
+  }, []);
 
-  const handleSelectionChange =
-    useCallback(
-      ({ nodes: selectedNodes }) => {
-        if (
-          selectedNodes.length > 0
-        ) {
-          setSelectedNodeId(
-            selectedNodes[0].id
-          );
-        } else {
-          setSelectedNodeId(null);
-        }
-      },
-      []
-    );
-
-  // ==========================================
-  // DELETE
-  // ==========================================
-
+  // Delete selected nodes and edges
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (
-        event.key !== "Delete" &&
-        event.key !== "Backspace"
-      ) {
-        return;
-      }
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
 
-      // Do not delete while typing
-      const tag =
-        event.target.tagName;
-
+      const tag = event.target?.tagName;
       if (
         tag === "INPUT" ||
-        tag === "TEXTAREA"
+        tag === "TEXTAREA" ||
+        event.target?.isContentEditable
       ) {
         return;
       }
 
-      setArchitectures(
-        (currentArchitectures) => {
-          const architecture =
-            currentArchitectures[
-              currentLevel
-            ];
+      setArchitectures((current) => {
+        const architecture = current[currentLevel];
+        if (!architecture) return current;
 
-          if (!architecture) {
-            return currentArchitectures;
-          }
+        const deletedNodeIds = new Set(
+          architecture.nodes
+            .filter((node) => node.selected)
+            .map((node) => node.id)
+        );
 
-          const deletedNodeIds =
-            new Set(
-              architecture.nodes
-                .filter(
-                  (node) =>
-                    node.selected
-                )
-                .map(
-                  (node) =>
-                    node.id
-                )
-            );
-
-          return {
-            ...currentArchitectures,
-
-            [currentLevel]: {
-              ...architecture,
-
-              nodes:
-                architecture.nodes.filter(
-                  (node) =>
-                    !node.selected
-                ),
-
-              edges:
-                architecture.edges.filter(
-                  (edge) =>
-                    !edge.selected &&
-                    !deletedNodeIds.has(
-                      edge.source
-                    ) &&
-                    !deletedNodeIds.has(
-                      edge.target
-                    )
-                ),
-            },
-          };
-        }
-      );
+        return {
+          ...current,
+          [currentLevel]: {
+            ...architecture,
+            nodes: architecture.nodes.filter(
+              (node) => !node.selected
+            ),
+            edges: architecture.edges.filter(
+              (edge) =>
+                !edge.selected &&
+                !deletedNodeIds.has(edge.source) &&
+                !deletedNodeIds.has(edge.target)
+            ),
+          },
+        };
+      });
 
       setSelectedNodeId(null);
     };
 
-    window.addEventListener(
-      "keydown",
-      handleKeyDown
-    );
-
-    return () => {
-      window.removeEventListener(
-        "keydown",
-        handleKeyDown
-      );
-    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [currentLevel]);
 
-  // ==========================================
-  // UPDATE SELECTED NODE
-  // ==========================================
+  // Edit the selected component
+  const updateSelectedNode = (property, value) => {
+    if (!selectedNode) return;
 
-  const updateSelectedNode = (
-    property,
-    value
-  ) => {
-    if (!selectedNode) {
-      return;
-    }
+    setArchitectures((current) => {
+      const architecture = current[currentLevel];
+      if (!architecture) return current;
 
-    setArchitectures(
-      (currentArchitectures) => {
-        const architecture =
-          currentArchitectures[
-            currentLevel
-          ];
+      const updatedNodes = architecture.nodes.map((node) => {
+        if (node.id !== selectedNode.id) return node;
 
-        if (!architecture) {
-          return currentArchitectures;
+        if (property === "label" || property === "description") {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              [property]: value,
+            },
+          };
         }
 
-        const updatedNodes =
-          architecture.nodes.map(
-            (node) => {
-              if (
-                node.id !==
-                selectedNode.id
-              ) {
-                return node;
-              }
-
-              // DATA PROPERTIES
-              if (
-                property === "label" ||
-                property ===
-                  "description"
-              ) {
-                return {
-                  ...node,
-
-                  data: {
-                    ...node.data,
-
-                    [property]: value,
-                  },
-                };
-              }
-
-              // STYLE PROPERTIES
-              return {
-                ...node,
-
-                style: {
-                  ...node.style,
-
-                  [property]: value,
-                },
-              };
-            }
-          );
-
         return {
-          ...currentArchitectures,
-
-          [currentLevel]: {
-            ...architecture,
-            nodes: updatedNodes,
+          ...node,
+          style: {
+            ...node.style,
+            [property]: value,
           },
         };
-      }
-    );
+      });
+
+      return {
+        ...current,
+        [currentLevel]: {
+          ...architecture,
+          nodes: updatedNodes,
+        },
+      };
+    });
   };
 
-  // ==========================================
-  // OPEN DRILL DOWN
-  // ==========================================
-
+  // Open or create a child architecture
   const openDrillDown = () => {
-    if (!selectedNode) {
-      return;
-    }
+    if (!selectedNode) return;
 
-    const childLevel =
-      `${currentLevel}-${selectedNode.id}`;
+    const childLevel = `${currentLevel}-${selectedNode.id}`;
+    const childName = selectedNode.data?.label || "Child Architecture";
 
-    const childName =
-      selectedNode.data?.label ||
-      "Child Architecture";
+    setArchitectures((current) => {
+      if (current[childLevel]) return current;
 
-    // Create child architecture
-    setArchitectures(
-      (currentArchitectures) => {
-        if (
-          currentArchitectures[
-            childLevel
-          ]
-        ) {
-          return currentArchitectures;
-        }
+      return {
+        ...current,
+        [childLevel]: {
+          name: childName,
+          nodes: [],
+          edges: [],
+        },
+      };
+    });
 
-        return {
-          ...currentArchitectures,
+    setLevelNames((current) => ({
+      ...current,
+      [childLevel]: childName,
+    }));
 
-          [childLevel]: {
-            name: childName,
-            nodes: [],
-            edges: [],
-          },
-        };
-      }
-    );
-
-    // Save the actual component name
-    setLevelNames(
-      (currentNames) => ({
-        ...currentNames,
-
-        [childLevel]: childName,
-      })
-    );
-
-    // Save current level
-    setLevelHistory(
-      (history) => [
-        ...history,
-        currentLevel,
-      ]
-    );
-
-    // Enter child architecture
+    setLevelHistory((history) => [...history, currentLevel]);
     setCurrentLevel(childLevel);
-
     setSelectedNodeId(null);
-
     setActiveTool("select");
   };
 
-  // ==========================================
-  // BACK
-  // ==========================================
-
+  // Return to the previous architecture level
   const goBack = () => {
-    if (
-      levelHistory.length === 0
-    ) {
-      return;
+    if (levelHistory.length === 0) return;
+
+    setCurrentLevel(levelHistory[levelHistory.length - 1]);
+    setLevelHistory((history) => history.slice(0, -1));
+    setSelectedNodeId(null);
+    setActiveTool("select");
+  };
+
+  // Save architecture to the backend
+  
+const saveDraft = async () => {
+  try {
+    const architectureData = {
+      name: architectureName.trim() || "Main Architecture",
+      description: "Architecture created using Architecture Builder",
+      content: {
+        currentLevel,
+        levelNames: {
+          ...levelNames,
+          root: architectureName.trim() || "Main Architecture",
+        },
+        levelHistory,
+        architectures: {
+          ...architectures,
+          root: {
+            ...architectures.root,
+            name: architectureName.trim() || "Main Architecture",
+          },
+        },
+      },
+    };
+
+    let savedArchitecture;
+
+    if (editingArchitectureId !== null) {
+      // Update the architecture that is already saved.
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/architectures/${editingArchitectureId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(architectureData),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || "Failed to update architecture"
+        );
+      }
+
+      savedArchitecture = await response.json();
+    } else {
+      // Create a new architecture only when it has not been saved before.
+      savedArchitecture = await createArchitecture(architectureData);
+      setEditingArchitectureId(savedArchitecture.id);
     }
 
-    const previousLevel =
-      levelHistory[
-        levelHistory.length - 1
-      ];
-
-    setCurrentLevel(
-      previousLevel
+    localStorage.setItem(
+      "architecture-id",
+      String(savedArchitecture.id)
     );
 
-    setLevelHistory(
-      (history) =>
-        history.slice(0, -1)
+    setPublishStatus(savedArchitecture.status || "draft");
+
+    window.alert(
+      `Architecture saved successfully. ID: ${savedArchitecture.id}`
     );
-
-    setSelectedNodeId(null);
-
-    setActiveTool("select");
-  };
-
-  // ==========================================
-// SAVE DRAFT
-// ==========================================
-
-const saveDraft = () => {
-  const architectureData = {
-    name:
-      levelNames.root ||
-      "Main Architecture",
-
-    status: "draft",
-
-    currentLevel,
-
-    levelNames,
-
-    levelHistory,
-
-    architectures,
-
-    savedAt:
-      new Date().toISOString(),
-  };
-
-  localStorage.setItem(
-    "architecture-draft",
-    JSON.stringify(
-      architectureData
-    )
-  );
-
-  setPublishStatus("draft");
-
-  alert(
-    "Architecture saved as draft."
-  );
+  } catch (error) {
+    console.error("Save architecture error:", error);
+    window.alert(`Failed to save architecture: ${error.message}`);
+  }
 };
 
-// ==========================================
-// PUBLISH ARCHITECTURE
-// ==========================================
+  // Publish the saved architecture
+  const publishArchitecture = async () => {
+    try {
+      const architectureId = localStorage.getItem("architecture-id");
 
-const publishArchitecture = () => {
-  const architectureData = {
-    name:
-      levelNames.root ||
-      "Main Architecture",
+      if (!architectureId) {
+        window.alert("Please save the architecture first, then publish it.");
+        return;
+      }
 
-    status: "published",
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/architectures/${architectureId}/publish`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }
+      );
 
-    currentLevel,
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(
+          errorData?.detail || "Failed to publish architecture"
+        );
+      }
 
-    levelNames,
-
-    levelHistory,
-
-    architectures,
-
-    publishedAt:
-      new Date().toISOString(),
+      await response.json();
+      setPublishStatus("published");
+      window.alert("Architecture published successfully.");
+    } catch (error) {
+      console.error("Publish architecture error:", error);
+      window.alert(`Failed to publish architecture: ${error.message}`);
+    }
   };
-
-  localStorage.setItem(
-    "architecture-published",
-    JSON.stringify(
-      architectureData
-    )
-  );
-
-  // Also keep the latest version as draft
-  localStorage.setItem(
-    "architecture-draft",
-    JSON.stringify(
-      architectureData
-    )
-  );
-
-  setPublishStatus(
-    "published"
-  );
-
-  alert(
-    "Architecture published successfully."
-  );
-};
-
-  // ==========================================
-  // BUILD LEVEL PATH
-  // ==========================================
 
   const levelPath = [
     "root",
     ...levelHistory,
     currentLevel,
-  ].filter(
-    (level, index, array) =>
-      array.indexOf(level) === index
-  );
+  ].filter((level, index, array) => array.indexOf(level) === index);
 
-  // ==========================================
-  // RENDER
-  // ==========================================
+  // Shared student architecture route
+  if (sharedArchitectureId !== null) {
+    return (
+      <StudentArchitectureViewer
+        architectureId={sharedArchitectureId}
+        onBack={() => {
+          window.location.href = "/";
+        }}
+      />
+    );
+  }
 
-  return (
-    <div className="editor">
+  // Student architecture list
+  if (studentView) {
+    return (
+      <div className="student-list-page">
+        <header className="student-list-header">
+          <div>
+            <span className="student-list-eyebrow">DIGIDENSE</span>
+            <h1>Student Architectures</h1>
+          </div>
 
-      {/* =====================================
-          TOOLBAR
-          ===================================== */}
-
-      <div className="toolbar">
-
-        {/* BACK */}
-
-        {currentLevel !==
-          "root" && (
           <button
-            className="tool-button"
-            onClick={goBack}
+            className="standard-button primary-button"
+            onClick={() => setStudentView(false)}
           >
-            Back
+            Back to Instructor
           </button>
-        )}
+        </header>
 
-        {/* SELECT */}
+        <main className="student-list-content">
+          <StudentArchitectures 
+           onEditArchitecture={handleEditArchitecture}
+           />
+        </main>
+      </div>
+    );
+  }
 
-        <button
-          className={
-            activeTool === "select"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "select"
-            )
-          }
-        >
-          Select
-        </button>
+  // Instructor architecture editor
+  return (
+    <div className="editor instructor-editor">
+      <header className="instructor-header">
+        <div className="instructor-brand">
+          <div className="instructor-brand-icon">A</div>
+          <div>
+            <span className="instructor-eyebrow">DIGIDENSE WORKSPACE</span>
+            <h1>Architecture Builder</h1>
+          </div>
+        </div>
 
-        {/* RECTANGLE */}
+        <div className="instructor-title-field">
+          <label htmlFor="architecture-title">Architecture name</label>
+          <input
+            id="architecture-title"
+            type="text"
+            value={architectureName}
+            onChange={(event) => setArchitectureName(event.target.value)}
+            placeholder="Enter architecture name"
+          />
+        </div>
+        
+<div className="instructor-header-actions">
 
-        <button
-          className={
-            activeTool === "rectangle"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "rectangle"
-            )
-          }
-        >
-          Rectangle
-        </button>
-
-        {/* CIRCLE */}
-
-        <button
-          className={
-            activeTool === "circle"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "circle"
-            )
-          }
-        >
-          Circle
-        </button>
-
-        {/* CONTAINER */}
-
-        <button
-          className={
-            activeTool === "container"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "container"
-            )
-          }
-        >
-          Container
-        </button>
-
-        {/* TEXT */}
-
-        <button
-          className={
-            activeTool === "text"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "text"
-            )
-          }
-        >
-          Text
-        </button>
-
-        {/* ARROW */}
-
-        <button
-          className={
-            activeTool === "arrow"
-              ? "tool-button active"
-              : "tool-button"
-          }
-          onClick={() =>
-            setActiveTool(
-              "arrow"
-            )
-          }
-        >
-          Arrow
-  
-        </button>
-
-        {/* =================================
-    SAVE / PUBLISH
-    ================================= */}
-
-<div
-  style={{
-    marginLeft: "auto",
-    display: "flex",
-    gap: "8px",
-    alignItems: "center",
-  }}
->
-
+  {/* Back button */}
   <button
-    className="tool-button"
-    onClick={saveDraft}
+    className="standard-button"
+    onClick={goBack}
+    disabled={levelHistory.length === 0}
+    title={
+      levelHistory.length === 0
+        ? "You are at the main architecture"
+        : "Go back to the previous architecture"
+    }
   >
-    Save Draft
+    ← Back
   </button>
 
+  {/* Save button */}
+  
+  <button className="standard-button" onClick={saveDraft}>
+    <span className="button-icon">💾</span>
+    Save
+  </button>
+
+  {/* Publish button */}
   <button
-    className="tool-button"
+    className="standard-button primary-button"
     onClick={publishArchitecture}
+    
   >
+    <span className="button-icon">🚀</span>
     Publish
   </button>
 
-  <span
-    style={{
-      fontSize: "13px",
-      fontWeight: "600",
-      paddingLeft: "5px",
-    }}
+  {/* Student View button */}
+  <button
+    className="standard-button"
+    onClick={() => setStudentView(true)}
   >
-    {publishStatus === "published"
-      ? "Published ✓"
-      : "Draft"}
-  </span>
+  
+    Student View
+  </button>
 
 </div>
 
-        {/* =================================
-            LEVEL PATH - SECOND LINE
-            ================================= */}
 
-        <div className="level-path">
-          {levelPath
-            .map(
-              (level) =>
-                levelNames[level] ||
-                "Architecture"
-            )
-            .join(" → ")}
+      </header>
+
+      <div className="instructor-toolstrip">
+        <div className="instructor-toolstrip-label">TOOLS</div>
+
+        {[
+          ["select", "↖", "Select"],
+          ["rectangle", "▱", "Rectangle"],
+          ["circle", "○", "Circle"],
+          ["container", "▣", "Container"],
+          ["text", "T", "Text"],
+          ["arrow", "↗", "Arrow"],
+        
+        ].map(([tool, symbol, label]) => (
+          <button
+            key={tool}
+            className={`instructor-tool ${
+              activeTool === tool ? "active" : ""
+            }`}
+            onClick={() => setActiveTool(tool)}
+            title={label}
+          >
+            <span className="instructor-tool-symbol">{symbol}</span>
+            <span>{label}</span>
+          </button>
+        ))}
+
+        <button
+          className="instructor-tool instructor-drilldown-toolbar-button"
+          onClick={openDrillDown}
+          disabled={!selectedNode}
+          title={
+            selectedNode
+              ? "Open nested architecture"
+              : "Select a component first"
+          }
+        >
+          <span className="instructor-tool-symbol">↳</span>
+          <span>Open Drill Down</span>
+        </button>
+
+        <div className="instructor-toolstrip-help">
+          {activeTool === "select"
+            ? "Select and move components"
+            : activeTool === "arrow"
+            ? "Drag from one connection handle to another"
+            : `Click the canvas to add ${activeTool}`}
         </div>
-
       </div>
 
-      {/* =====================================
-          WORKSPACE
-          ===================================== */}
+      <main className="instructor-workspace">
+        <section className="instructor-canvas-card">
+          <div className="instructor-canvas-header">
+            <div>
+              <span className="instructor-section-label">WORKSPACE</span>
+              <h2>{architectureName.trim() || "Main Architecture"}</h2>
+            </div>
 
-      <div className="workspace">
+            <div className="instructor-canvas-meta">
+              <span>{nodes.length} components</span>
+              <span className="meta-separator">·</span>
+              <span>{edges.length} connections</span>
+            </div>
+          </div>
 
-        {/* ===================================
-            CANVAS
-            =================================== */}
+          <div className="canvas instructor-canvas">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onPaneClick={handlePaneClick}
+              onConnect={handleConnect}
+              onNodeClick={handleNodeClick}
+              onSelectionChange={handleSelectionChange}
+              nodesDraggable={activeTool === "select"}
+              nodesConnectable={activeTool === "arrow"}
+              elementsSelectable={true}
+              fitView
+            >
+              <Controls />
+              <MiniMap />
+            </ReactFlow>
+          </div>
 
-        <div className="canvas">
+          <footer className="instructor-canvas-footer">
+            <span>
+              <span className="instructor-footer-dot" />
+              Editor ready
+            </span>
+            <span>Choose a tool above to edit your architecture</span>
+          </footer>
+        </section>
 
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={
-              onNodesChange
-            }
-            onEdgesChange={
-              onEdgesChange
-            }
-            onPaneClick={
-              handlePaneClick
-            }
-            onConnect={
-              handleConnect
-            }
-            onNodeClick={
-              handleNodeClick
-            }
-            onSelectionChange={
-              handleSelectionChange
-            }
-            nodesDraggable={
-              activeTool === "select"
-            }
-            nodesConnectable={
-              activeTool === "arrow"
-            }
-            elementsSelectable={
-              true
-            }
-            fitView
-          >
-            <Background />
-
-            <Controls />
-
-            <MiniMap />
-          </ReactFlow>
-
-        </div>
-
-        {/* ===================================
-            PROPERTIES PANEL
-            =================================== */}
-
-        <div className="properties-panel">
-
-          <div className="properties-header">
-
-            <h3>
-              Properties
-            </h3>
+        <aside className="properties-panel instructor-properties">
+          <div className="properties-header instructor-properties-header">
+            <div>
+              <span className="instructor-section-label">COMPONENT SETTINGS</span>
+              <h3>Properties</h3>
+            </div>
 
             {selectedNode && (
               <button
-                onClick={() =>
-                  setSelectedNodeId(
-                    null
-                  )
-                }
+                className="instructor-clear-selection"
+                aria-label="Clear selection"
+                onClick={() => setSelectedNodeId(null)}
               >
                 ×
               </button>
             )}
-
           </div>
 
-          {/* NO NODE SELECTED */}
-
           {!selectedNode && (
-            <div className="empty-properties">
-              Select a component to
-              edit its properties.
+            <div className="instructor-empty-properties">
+              <div className="instructor-empty-icon">◇</div>
+              <h4>No component selected</h4>
+              <p>
+                Select a component on the canvas to edit its name, explanation,
+                size, and drill-down architecture.
+              </p>
             </div>
           )}
 
-          {/* NODE SELECTED */}
-
           {selectedNode && (
-            <>
+            <div className="instructor-property-content">
+              <div className="instructor-selected-symbol">◇</div>
 
-              {/* COMPONENT NAME */}
+              <span className="instructor-section-label">
+                SELECTED COMPONENT
+              </span>
 
               <div className="property-group">
-
-                <label>
-                  Component Name
-                </label>
-
+                <label htmlFor="component-name">Component name</label>
                 <input
+                  id="component-name"
                   type="text"
-                  value={
-                    selectedNode
-                      .data?.label ||
-                    ""
-                  }
+                  value={selectedNode.data?.label || ""}
                   onChange={(event) =>
-                    updateSelectedNode(
-                      "label",
-                      event.target.value
-                    )
+                    updateSelectedNode("label", event.target.value)
                   }
+                  placeholder="Enter component name"
                 />
-
               </div>
-
-              {/* EXPLANATION */}
 
               <div className="property-group">
-
-                <label>
-                  Explanation
-                </label>
-
+                <label htmlFor="component-description">Explanation</label>
                 <textarea
-                  rows="6"
-                  value={
-                    selectedNode
-                      .data
-                      ?.description ||
-                    ""
-                  }
+                  id="component-description"
+                  rows={6}
+                  value={selectedNode.data?.description || ""}
                   onChange={(event) =>
-                    updateSelectedNode(
-                      "description",
-                      event.target.value
-                    )
+                    updateSelectedNode("description", event.target.value)
                   }
-                  placeholder="Explain this component..."
+                  placeholder="Explain what this component does..."
                 />
-
               </div>
-
-              {/* WIDTH / HEIGHT */}
 
               <div className="property-row">
-
                 <div className="property-group">
-
-                  <label>
-                    Width
-                  </label>
-
+                  <label htmlFor="component-width">Width</label>
                   <input
+                    id="component-width"
                     type="number"
-                    value={
-                      parseInt(
-                        selectedNode
-                          .style?.width
-                      ) || 100
-                    }
+                    min="30"
+                    value={parseInt(selectedNode.style?.width, 10) || 100}
                     onChange={(event) =>
-                      updateSelectedNode(
-                        "width",
-                        Number(
-                          event.target.value
-                        )
-                      )
+                      updateSelectedNode("width", Number(event.target.value))
                     }
                   />
-
                 </div>
 
                 <div className="property-group">
-
-                  <label>
-                    Height
-                  </label>
-
+                  <label htmlFor="component-height">Height</label>
                   <input
+                    id="component-height"
                     type="number"
-                    value={
-                      parseInt(
-                        selectedNode
-                          .style?.height
-                      ) || 100
-                    }
+                    min="30"
+                    value={parseInt(selectedNode.style?.height, 10) || 100}
                     onChange={(event) =>
-                      updateSelectedNode(
-                        "height",
-                        Number(
-                          event.target.value
-                        )
-                      )
+                      updateSelectedNode("height", Number(event.target.value))
                     }
                   />
-
                 </div>
-
               </div>
 
-              {/* DRILL DOWN */}
+              <div className="instructor-drilldown-card">
+                <div className="instructor-drilldown-icon">↳</div>
+                <div>
+                  <h4>Nested architecture</h4>
+                  <p>Create or open a detailed flow for this component.</p>
+                </div>
+              </div>
 
               <button
-                className="drill-down-button"
-                onClick={
-                  openDrillDown
-                }
+                className="instructor-drilldown-button"
+                onClick={openDrillDown}
               >
-                Open Drill Down
+                Open Drill Down <span>→</span>
               </button>
-
-            </>
+            </div>
           )}
 
-        </div>
-
-      </div>
-
+          <div className="instructor-properties-footer">
+            <span className="properties-footer-dot" />
+            Changes are kept in the current editor until saved.
+          </div>
+        </aside>
+      </main>
     </div>
   );
 }
